@@ -22,7 +22,7 @@ override_dh_auto_configure:
 		-Denable-packagekit=true \
 		-Denable-desktop=true \
 		-Denable-exif=true \
-		-Denable-gtk-doc=true \
+		-Denable-gtk-doc=false \
 		-Denable-packagekit=true \
 		-Denable-nst-extension=true \
 		-Denable-unity=true \

@@ -1,0 +1,25 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Wed, 18 Jul 2018 18:46:16 +0200
+Subject: Revert "Revert "nautilus-file: Don't show thumbnails for the first 2
+ zoom levels""
+
+This reverts commit d62c0899f34665bdc4752ce8b6844328889f4638.
+
+This feature was already provided in Ubuntu, so would be a regression if we drop it
+---
+ src/nautilus-file.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/nautilus-file.c b/src/nautilus-file.c
+index 0ac5398..adbf081 100644
+--- a/src/nautilus-file.c
++++ b/src/nautilus-file.c
+@@ -5511,7 +5511,7 @@ nautilus_thumbnail_is_limited_by_zoom (int size,
+ 
+     zoom_level = size * scale;
+ 
+-    if (zoom_level <= NAUTILUS_LIST_ICON_SIZE_SMALL)
++    if (zoom_level <= NAUTILUS_LIST_ICON_SIZE_STANDARD)
+     {
+         return TRUE;
+     }

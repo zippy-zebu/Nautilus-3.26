@@ -1,0 +1,302 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Wed, 11 Apr 2018 17:51:34 -0500
+Subject: recent: add function to update manager on file rename or move
+
+When files have been moved or renamed nautilus should inform
+recent manager about this change for the files that
+are listed there.
+---
+ src/nautilus-directory.c |   8 +++
+ src/nautilus-file.c      |  25 +++++----
+ src/nautilus-recent.c    | 134 +++++++++++++++++++++++++++++++++++++++++++++++
+ src/nautilus-recent.h    |   8 ++-
+ 4 files changed, 160 insertions(+), 15 deletions(-)
+
+diff --git a/src/nautilus-directory.c b/src/nautilus-directory.c
+index 19316e8..9bb5460 100644
+--- a/src/nautilus-directory.c
++++ b/src/nautilus-directory.c
+@@ -33,6 +33,7 @@
+ #include "nautilus-lib-self-check-functions.h"
+ #include "nautilus-metadata.h"
+ #include "nautilus-profile.h"
++#include "nautilus-recent.h"
+ #include "nautilus-vfs-directory.h"
+ #include <eel/eel-glib-extensions.h>
+ #include <eel/eel-string.h>
+@@ -1560,9 +1561,14 @@ nautilus_directory_notify_files_moved (GList *file_pairs)
+ 
+     for (p = file_pairs; p != NULL; p = p->next)
+     {
++        g_autofree char *from_uri = NULL;
++        g_autofree char *to_uri = NULL;
++
+         pair = p->data;
+         from_location = pair->from;
+         to_location = pair->to;
++        from_uri = g_file_get_uri (from_location);
++        to_uri = g_file_get_uri (to_location);
+ 
+         /* Handle overwriting a file. */
+         file = nautilus_file_get_existing (to_location);
+@@ -1645,6 +1651,8 @@ nautilus_directory_notify_files_moved (GList *file_pairs)
+             /* Unref each file once to balance out nautilus_file_get_by_uri. */
+             unref_list = g_list_prepend (unref_list, file);
+         }
++
++        nautilus_recent_update_file_moved (from_uri, to_uri, NULL, NULL);
+     }
+ 
+     /* Now send out the changed and added signals for existing file objects. */
+diff --git a/src/nautilus-file.c b/src/nautilus-file.c
+index 28b5a13..7886d1f 100644
+--- a/src/nautilus-file.c
++++ b/src/nautilus-file.c
+@@ -34,6 +34,7 @@
+ #include "nautilus-link.h"
+ #include "nautilus-metadata.h"
+ #include "nautilus-module.h"
++#include "nautilus-recent.h"
+ #include "nautilus-thumbnails.h"
+ #include "nautilus-ui-utilities.h"
+ #include "nautilus-video-mime-types.h"
+@@ -1960,14 +1961,12 @@ rename_get_info_callback (GObject      *source_object,
+                           GAsyncResult *res,
+                           gpointer      callback_data)
+ {
++    g_autoptr (GFileInfo) new_info = NULL;
++    g_autoptr (GError) error = NULL;
+     NautilusFileOperation *op;
+     NautilusDirectory *directory;
+     NautilusFile *existing_file;
+-    char *old_uri;
+-    char *new_uri;
+     const char *new_name;
+-    GFileInfo *new_info;
+-    GError *error;
+ 
+     op = callback_data;
+ 
+@@ -1975,8 +1974,12 @@ rename_get_info_callback (GObject      *source_object,
+     new_info = g_file_query_info_finish (G_FILE (source_object), res, &error);
+     if (new_info != NULL)
+     {
+-        directory = op->file->details->directory;
++        g_autofree char *old_uri = NULL;
++        g_autofree char *new_uri = NULL;
++        g_autofree char *new_display_name = NULL;
++        g_autofree char *old_display_name = NULL;
+ 
++        directory = op->file->details->directory;
+         new_name = g_file_info_get_name (new_info);
+ 
+         /* If there was another file by the same name in this
+@@ -1991,6 +1994,7 @@ rename_get_info_callback (GObject      *source_object,
+         }
+ 
+         old_uri = nautilus_file_get_uri (op->file);
++        old_display_name = nautilus_file_get_display_name (op->file);
+ 
+         update_info_and_name (op->file, new_info);
+ 
+@@ -2018,9 +2022,10 @@ rename_get_info_callback (GObject      *source_object,
+         g_object_unref (subject);
+         g_free (origin);
+ 
++        new_display_name = nautilus_file_get_display_name (op->file);
+         nautilus_directory_moved (old_uri, new_uri);
+-        g_free (new_uri);
+-        g_free (old_uri);
++        nautilus_recent_update_file_moved (old_uri, new_uri,
++                                           old_display_name, new_display_name);
+ 
+         /* the rename could have affected the display name if e.g.
+          * we're in a vfolder where the name comes from a desktop file
+@@ -2032,14 +2037,8 @@ rename_get_info_callback (GObject      *source_object,
+                                                  NAUTILUS_FILE_ATTRIBUTE_INFO |
+                                                  NAUTILUS_FILE_ATTRIBUTE_LINK_INFO);
+         }
+-
+-        g_object_unref (new_info);
+     }
+     nautilus_file_operation_complete (op, NULL, error);
+-    if (error)
+-    {
+-        g_error_free (error);
+-    }
+ }
+ 
+ static void
+diff --git a/src/nautilus-recent.c b/src/nautilus-recent.c
+index ab50fef..b122dbe 100644
+--- a/src/nautilus-recent.c
++++ b/src/nautilus-recent.c
+@@ -1,5 +1,7 @@
+ /*
+  * Copyright (C) 2002 James Willcox
++ * Copyright (C) 2018 Canonical Ltd
++ * Copyright (C) 2018 Marco Trevisan
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -17,6 +19,7 @@
+ 
+ #include "config.h"
+ #include "nautilus-recent.h"
++#include "nautilus-file-private.h"
+ 
+ #include <eel/eel-vfs-extensions.h>
+ 
+@@ -85,3 +88,134 @@ nautilus_recent_add_file (NautilusFile *file,
+ 
+     g_free (uri);
+ }
++
++void
++nautilus_recent_update_file_moved (const gchar *old_uri,
++                                   const gchar *new_uri,
++                                   const gchar *old_display_name,
++                                   const gchar *new_display_name)
++{
++    GtkRecentManager *recent_manager = nautilus_recent_get_manager ();
++    g_autoptr (NautilusFile) file = NULL;
++    NautilusFile *existing_file;
++
++    if (new_uri == NULL || old_uri == NULL ||
++        (g_strcmp0 (old_uri, new_uri) == 0 &&
++         g_strcmp0 (old_display_name, new_display_name) == 0))
++    {
++        return;
++    }
++
++    existing_file = nautilus_file_get_existing_by_uri (new_uri);
++
++    if (existing_file)
++    {
++        file = g_object_ref (existing_file);
++    }
++    else
++    {
++        g_autoptr (GFile) location = g_file_new_for_uri (new_uri);
++        g_autoptr (GFileInfo) file_info = NULL;
++
++        file_info = g_file_query_info (location,
++                                       NAUTILUS_FILE_DEFAULT_ATTRIBUTES,
++                                       0, NULL, NULL);
++        if (file_info == NULL)
++        {
++            return;
++        }
++
++        file = nautilus_file_get (location);
++        nautilus_file_update_info (file, file_info);
++    }
++
++    if (nautilus_file_is_directory (file))
++    {
++        g_autoptr (GFile) location = NULL;
++        GList *recent_items;
++        GList *l;
++
++        location = g_file_new_for_uri (old_uri);
++        recent_items = gtk_recent_manager_get_items (recent_manager);
++
++        for (l = recent_items; l; l = l->next)
++        {
++            GtkRecentInfo *info = l->data;
++            const gchar *item_uri = gtk_recent_info_get_uri (info);
++
++            if (g_str_has_prefix (item_uri, old_uri))
++            {
++                g_autoptr (GFile) item_file = NULL;
++                g_autofree gchar *relative_path = NULL;
++                g_autofree gchar *new_item_uri = NULL;
++
++                item_file = g_file_new_for_uri (item_uri);
++                relative_path = g_file_get_relative_path (location, item_file);
++                new_item_uri = g_build_filename (new_uri, relative_path, NULL);
++
++                gtk_recent_manager_move_item (recent_manager,
++                                              item_uri, new_item_uri, NULL);
++            }
++        }
++
++        g_list_free_full (recent_items, (GDestroyNotify) gtk_recent_info_unref);
++    }
++    else
++    {
++        GtkRecentInfo *old_recent;
++
++        old_recent = gtk_recent_manager_lookup_item (recent_manager,
++                                                     old_uri, NULL);
++        if (old_recent)
++        {
++            gboolean recreated = FALSE;
++
++            if ((new_display_name != NULL && old_display_name == NULL) ||
++                (g_strcmp0 (old_display_name, new_display_name) != 0 &&
++                 g_strcmp0 (old_display_name,
++                            gtk_recent_info_get_display_name (old_recent)) == 0))
++            {
++                /* If old display name, matches the one in the recent file
++                 * We can't just move it, but we need to recreate the
++                 * GtkRecentInfo
++                 */
++                GtkRecentData recent_data =
++                {
++                    .display_name = (gchar *) new_display_name,
++                    .description = (gchar *) gtk_recent_info_get_description (old_recent),
++                    .mime_type = (gchar *) gtk_recent_info_get_mime_type (old_recent),
++                    .app_name = gtk_recent_info_last_application (old_recent),
++                    .groups = gtk_recent_info_get_groups (old_recent, NULL),
++                    .is_private = gtk_recent_info_get_private_hint (old_recent),
++                };
++
++                if (recent_data.app_name)
++                {
++                    gtk_recent_info_get_application_info (old_recent,
++                                                          recent_data.app_name,
++                                                          (const gchar **) &(recent_data.app_exec),
++                                                          NULL, NULL);
++                }
++
++                if (gtk_recent_manager_add_full (recent_manager,
++                                                 new_uri,
++                                                 &recent_data))
++                {
++                    recreated = gtk_recent_manager_remove_item (recent_manager,
++                                                                old_uri,
++                                                                NULL);
++                }
++            }
++
++            if (!recreated)
++            {
++                gtk_recent_manager_move_item (recent_manager,
++                                              old_uri, new_uri, NULL);
++            }
++        }
++        else
++        {
++            gtk_recent_manager_remove_item (recent_manager, old_uri, NULL);
++        }
++    }
++}
+diff --git a/src/nautilus-recent.h b/src/nautilus-recent.h
+index 5c64f6c..841854e 100644
+--- a/src/nautilus-recent.h
++++ b/src/nautilus-recent.h
+@@ -7,7 +7,11 @@
+ #include "nautilus-file.h"
+ #include <gio/gio.h>
+ 
+-void nautilus_recent_add_file (NautilusFile *file,
+-			       GAppInfo *application);
++void nautilus_recent_add_file          (NautilusFile *file,
++                                        GAppInfo *application);
++void nautilus_recent_update_file_moved (const char *old_uri,
++                                        const char *new_uri,
++                                        const char *old_display_name,
++                                        const char *new_dispaly_name);
+ 
+ #endif

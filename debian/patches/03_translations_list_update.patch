@@ -1,0 +1,20 @@
+From: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Date: Fri, 20 Jul 2018 03:25:37 +0200
+Subject: _translations_list_update
+
+---
+ po/POTFILES.in | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/po/POTFILES.in b/po/POTFILES.in
+index 277a7ff..80d90ff 100644
+--- a/po/POTFILES.in
++++ b/po/POTFILES.in
+@@ -4,6 +4,7 @@ data/nautilus-autorun-software.desktop.in
+ data/org.gnome.Nautilus.appdata.xml.in
+ data/org.gnome.Nautilus.desktop.in
+ data/org.gnome.nautilus.gschema.xml
++debian/mount-archive.desktop.in
+ eel/eel-canvas.c
+ eel/eel-glib-extensions.c
+ eel/eel-gnome-extensions.c

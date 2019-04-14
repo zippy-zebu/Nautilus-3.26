@@ -1,0 +1,1022 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Thu, 26 Jul 2018 22:01:57 +0200
+Subject: query: add recursive flags and use it in search-engines
+
+Forwarded: yes, https://gitlab.gnome.org/GNOME/nautilus/merge_requests/249
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/1767027
+Applied-Upstream: 3.29
+---
+ src/meson.build                      |  1 +
+ src/nautilus-application.c           | 11 ++----
+ src/nautilus-application.h           |  3 +-
+ src/nautilus-directory-async.c       |  4 +-
+ src/nautilus-file-private.h          |  3 +-
+ src/nautilus-file-utilities.c        | 48 +++++++++++++++++++++++
+ src/nautilus-file-utilities.h        |  6 +++
+ src/nautilus-file.c                  | 28 ++++++++++++++
+ src/nautilus-file.h                  |  2 +
+ src/nautilus-query-editor.c          | 20 +++++-----
+ src/nautilus-query.c                 | 28 +++++++-------
+ src/nautilus-query.h                 | 14 +++++--
+ src/nautilus-search-directory.c      |  6 ---
+ src/nautilus-search-engine-private.h | 31 +++++++++++++++
+ src/nautilus-search-engine-simple.c  | 74 +++++++++---------------------------
+ src/nautilus-search-engine-simple.h  |  2 +
+ src/nautilus-search-engine-tracker.c | 16 ++++----
+ src/nautilus-search-engine.c         | 36 +++++++++++++-----
+ src/nautilus-search-engine.h         |  2 -
+ src/nautilus-shell-search-provider.c | 50 ++++++++++++++++--------
+ src/nautilus-window-slot.c           | 19 ++++-----
+ src/nautilus-window-slot.h           |  2 +-
+ src/nautilus-window.c                |  4 +-
+ src/nautilus-window.h                |  2 +-
+ 24 files changed, 261 insertions(+), 151 deletions(-)
+ create mode 100644 src/nautilus-search-engine-private.h
+
+diff --git a/src/meson.build b/src/meson.build
+index a771d12..73aafe9 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -226,6 +226,7 @@ libnautilus_sources = [
+     'nautilus-search-provider.h',
+     'nautilus-search-engine.c',
+     'nautilus-search-engine.h',
++    'nautilus-search-engine-private.h',
+     'nautilus-search-engine-model.c',
+     'nautilus-search-engine-model.h',
+     'nautilus-search-engine-simple.c',
+diff --git a/src/nautilus-application.c b/src/nautilus-application.c
+index 1ec0d22..26ce836 100644
+--- a/src/nautilus-application.c
++++ b/src/nautilus-application.c
+@@ -1621,15 +1621,12 @@ nautilus_application_new (void)
+ 
+ void
+ nautilus_application_search (NautilusApplication *self,
+-                             const gchar         *uri,
+-                             const gchar         *text)
++                             NautilusQuery       *query)
+ {
++    g_autoptr (GFile) location = NULL;
+     NautilusWindow *window;
+-    GFile *location;
+ 
+-    location = g_file_new_for_uri (uri);
++    location = nautilus_query_get_location (query);
+     window = open_window (self, location);
+-    nautilus_window_search (window, text);
+-
+-    g_object_unref (location);
++    nautilus_window_search (window, query);
+ }
+diff --git a/src/nautilus-application.h b/src/nautilus-application.h
+index 9cb32c8..47adcc4 100644
+--- a/src/nautilus-application.h
++++ b/src/nautilus-application.h
+@@ -86,8 +86,7 @@ GtkWidget * nautilus_application_connect_server (NautilusApplication *applicatio
+ 						 NautilusWindow      *window);
+ 
+ void nautilus_application_search (NautilusApplication *application,
+-                                  const gchar         *uri,
+-                                  const gchar         *text);
++                                  NautilusQuery       *query);
+ void nautilus_application_startup_common (NautilusApplication *application);
+ 
+ void nautilus_application_update_dbus_opened_locations (NautilusApplication *app);
+diff --git a/src/nautilus-directory-async.c b/src/nautilus-directory-async.c
+index 05a87e3..a1a27de 100644
+--- a/src/nautilus-directory-async.c
++++ b/src/nautilus-directory-async.c
+@@ -4383,6 +4383,7 @@ got_filesystem_info (FilesystemInfoState *state,
+         file->details->filesystem_readonly =
+             g_file_info_get_attribute_boolean (info, G_FILE_ATTRIBUTE_FILESYSTEM_READONLY);
+         filesystem_type = g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_FILESYSTEM_TYPE);
++        file->details->filesystem_remote = g_file_info_get_attribute_boolean (info, G_FILE_ATTRIBUTE_FILESYSTEM_REMOTE);
+         if (g_strcmp0 (eel_ref_str_peek (file->details->filesystem_type), filesystem_type) != 0)
+         {
+             eel_ref_str_unref (file->details->filesystem_type);
+@@ -4465,7 +4466,8 @@ filesystem_info_start (NautilusDirectory *directory,
+     g_file_query_filesystem_info_async (location,
+                                         G_FILE_ATTRIBUTE_FILESYSTEM_READONLY ","
+                                         G_FILE_ATTRIBUTE_FILESYSTEM_USE_PREVIEW ","
+-                                        G_FILE_ATTRIBUTE_FILESYSTEM_TYPE,
++                                        G_FILE_ATTRIBUTE_FILESYSTEM_TYPE ","
++                                        G_FILE_ATTRIBUTE_FILESYSTEM_REMOTE,
+                                         G_PRIORITY_DEFAULT,
+                                         state->cancellable,
+                                         query_filesystem_info_callback,
+diff --git a/src/nautilus-file-private.h b/src/nautilus-file-private.h
+index cb2bebb..5f6b209 100644
+--- a/src/nautilus-file-private.h
++++ b/src/nautilus-file-private.h
+@@ -202,7 +202,8 @@ struct NautilusFileDetails
+ 	eel_boolean_bit filesystem_readonly           : 1;
+ 	eel_boolean_bit filesystem_use_preview        : 2; /* GFilesystemPreviewType */
+ 	eel_boolean_bit filesystem_info_is_up_to_date : 1;
+-        eel_ref_str     filesystem_type;
++	eel_boolean_bit filesystem_remote             : 1;
++	eel_ref_str     filesystem_type;
+ 
+ 	time_t trash_time; /* 0 is unknown */
+ 	time_t recency; /* 0 is unknown */
+diff --git a/src/nautilus-file-utilities.c b/src/nautilus-file-utilities.c
+index e79f37b..f8d8476 100644
+--- a/src/nautilus-file-utilities.c
++++ b/src/nautilus-file-utilities.c
+@@ -1517,3 +1517,51 @@ nautilus_uri_to_native_uri (const gchar *uri)
+     return NULL;
+ }
+ 
++NautilusQueryRecursive
++location_settings_search_get_recursive (void)
++{
++    switch (g_settings_get_enum (nautilus_preferences, "recursive-search"))
++    {
++        case NAUTILUS_SPEED_TRADEOFF_ALWAYS:
++        {
++            return NAUTILUS_QUERY_RECURSIVE_ALWAYS;
++        }
++        break;
++
++        case NAUTILUS_SPEED_TRADEOFF_LOCAL_ONLY:
++        {
++            return NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY;
++        }
++        break;
++
++        case NAUTILUS_SPEED_TRADEOFF_NEVER:
++        {
++             return NAUTILUS_QUERY_RECURSIVE_NEVER;
++        }
++        break;
++    }
++
++    return NAUTILUS_QUERY_RECURSIVE_ALWAYS;
++}
++
++NautilusQueryRecursive
++location_settings_search_get_recursive_for_location (GFile *location)
++{
++    NautilusQueryRecursive recursive = location_settings_search_get_recursive ();
++
++    g_return_val_if_fail (location, recursive);
++
++    if (recursive == NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY)
++    {
++        g_autoptr (NautilusFile) file = nautilus_file_get_existing (location);
++
++        g_return_val_if_fail (file != NULL, recursive);
++
++        if (nautilus_file_is_remote (file))
++        {
++            recursive = NAUTILUS_QUERY_RECURSIVE_NEVER;
++        }
++    }
++
++    return recursive;
++}
+diff --git a/src/nautilus-file-utilities.h b/src/nautilus-file-utilities.h
+index b567611..b165d63 100644
+--- a/src/nautilus-file-utilities.h
++++ b/src/nautilus-file-utilities.h
+@@ -25,6 +25,9 @@
+ 
+ #include <gio/gio.h>
+ #include <gtk/gtk.h>
++#include <config.h>
++
++#include "nautilus-query.h"
+ 
+ #define NAUTILUS_DESKTOP_ID "org.gnome.Nautilus.desktop"
+ 
+@@ -127,4 +130,7 @@ GList * nautilus_file_list_from_uri_list (GList *uris);
+ 
+ gchar * nautilus_uri_to_native_uri (const gchar *uri);
+ 
++NautilusQueryRecursive location_settings_search_get_recursive (void);
++NautilusQueryRecursive location_settings_search_get_recursive_for_location (GFile *location);
++
+ #endif /* NAUTILUS_FILE_UTILITIES_H */
+diff --git a/src/nautilus-file.c b/src/nautilus-file.c
+index 22ea199..e30d791 100644
+--- a/src/nautilus-file.c
++++ b/src/nautilus-file.c
+@@ -4975,6 +4975,29 @@ nautilus_file_get_filesystem_type (NautilusFile *file)
+     return filesystem_type;
+ }
+ 
++gboolean
++nautilus_file_get_filesystem_remote (NautilusFile *file)
++{
++    NautilusFile *parent;
++
++    g_assert (NAUTILUS_IS_FILE (file));
++
++    if (nautilus_file_is_directory (file))
++    {
++        return file->details->filesystem_remote;
++    }
++    else
++    {
++        parent = nautilus_file_get_parent (file);
++        if (parent != NULL)
++        {
++            return parent->details->filesystem_remote;
++        }
++    }
++
++    return FALSE;
++}
++
+ gboolean
+ nautilus_file_should_show_thumbnail (NautilusFile *file)
+ {
+@@ -8376,6 +8399,11 @@ nautilus_file_is_remote (NautilusFile *file)
+ 
+     g_assert (NAUTILUS_IS_FILE (file));
+ 
++    if (nautilus_file_get_filesystem_remote (file))
++    {
++        return TRUE;
++    }
++
+     filesystem_type = nautilus_file_get_filesystem_type (file);
+ 
+     return filesystem_type != NULL && g_strv_contains (remote_types, filesystem_type);
+diff --git a/src/nautilus-file.h b/src/nautilus-file.h
+index 5b319f9..54fdcb3 100644
+--- a/src/nautilus-file.h
++++ b/src/nautilus-file.h
+@@ -253,6 +253,8 @@ char *                  nautilus_file_get_filesystem_id                 (Nautilu
+ 
+ char *                  nautilus_file_get_filesystem_type               (NautilusFile                   *file);
+ 
++gboolean                nautilus_file_get_filesystem_remote             (NautilusFile                   *file);
++
+ NautilusFile *          nautilus_file_get_trash_original_file           (NautilusFile                   *file);
+ 
+ /* Permissions. */
+diff --git a/src/nautilus-query-editor.c b/src/nautilus-query-editor.c
+index 94b9c4d..8398ad4 100644
+--- a/src/nautilus-query-editor.c
++++ b/src/nautilus-query-editor.c
+@@ -144,12 +144,12 @@ update_information_label (NautilusQueryEditor *editor)
+             fts_sensitive = FALSE;
+         }
+         else if (nautilus_file_is_remote (file) &&
+-                 !settings_search_is_recursive (editor))
++                 location_settings_search_get_recursive_for_location (priv->location) == NAUTILUS_QUERY_RECURSIVE_NEVER)
+         {
+             label = _("Remote location — only searching the current folder");
+             fts_sensitive = FALSE;
+         }
+-        else if (!settings_search_is_recursive (editor))
++        else if (location_settings_search_get_recursive_for_location (priv->location) == NAUTILUS_QUERY_RECURSIVE_NEVER)
+         {
+             label = _("Only searching the current folder");
+         }
+@@ -170,17 +170,18 @@ recursive_search_preferences_changed (GSettings           *settings,
+                                       gchar               *key,
+                                       NautilusQueryEditor *editor)
+ {
++
+     NautilusQueryEditorPrivate *priv;
+-    gboolean recursive;
++    NautilusQueryRecursive recursive;
+ 
+     priv = nautilus_query_editor_get_instance_private (editor);
+ 
+-    if (!priv->location || !priv->query)
++    if (!priv->query)
+     {
+         return;
+     }
+ 
+-    recursive = settings_search_is_recursive (editor);
++    recursive = location_settings_search_get_recursive ();
+     if (recursive != nautilus_query_get_recursive (priv->query))
+     {
+         nautilus_query_set_recursive (priv->query, recursive);
+@@ -382,7 +383,6 @@ create_query (NautilusQueryEditor *editor)
+     NautilusQueryEditorPrivate *priv;
+     NautilusQuery *query;
+     NautilusFile *file;
+-    gboolean recursive;
+     gboolean fts_enabled;
+ 
+     priv = nautilus_query_editor_get_instance_private (editor);
+@@ -396,11 +396,13 @@ create_query (NautilusQueryEditor *editor)
+ 
+     nautilus_query_set_search_content (query, fts_enabled);
+ 
+-    recursive = settings_search_is_recursive (editor);
+-
+     nautilus_query_set_text (query, gtk_entry_get_text (GTK_ENTRY (priv->entry)));
+     nautilus_query_set_location (query, priv->location);
+-    nautilus_query_set_recursive (query, recursive);
++
++    /* We only set the query using the global setting for recursivity here,
++     * it's up to the search engine to check weather it can proceed with
++     * deep search in the current directory or not. */
++    nautilus_query_set_recursive (query, location_settings_search_get_recursive ());
+ 
+     nautilus_query_editor_set_query (editor, query);
+ 
+diff --git a/src/nautilus-query.c b/src/nautilus-query.c
+index 59600d1..c3e4ef4 100644
+--- a/src/nautilus-query.c
++++ b/src/nautilus-query.c
+@@ -44,11 +44,11 @@ struct _NautilusQuery
+     GList *mime_types;
+     gboolean show_hidden;
+     GPtrArray *date_range;
++    NautilusQueryRecursive recursive;
+     NautilusQuerySearchType search_type;
+     NautilusQuerySearchContent search_content;
+ 
+     gboolean searching;
+-    gboolean recursive;
+     char **prepared_words;
+     GMutex prepared_words_mutex;
+ };
+@@ -118,7 +118,7 @@ nautilus_query_get_property (GObject    *object,
+ 
+         case PROP_RECURSIVE:
+         {
+-            g_value_set_boolean (value, self->recursive);
++            g_value_set_enum (value, self->recursive);
+         }
+         break;
+ 
+@@ -181,7 +181,7 @@ nautilus_query_set_property (GObject      *object,
+ 
+         case PROP_RECURSIVE:
+         {
+-            nautilus_query_set_recursive (self, g_value_get_boolean (value));
++            nautilus_query_set_recursive (self, g_value_get_enum (value));
+         }
+         break;
+ 
+@@ -272,11 +272,12 @@ nautilus_query_class_init (NautilusQueryClass *class)
+      */
+     g_object_class_install_property (gobject_class,
+                                      PROP_RECURSIVE,
+-                                     g_param_spec_boolean ("recursive",
+-                                                           "Whether the query is being performed on subdirectories",
+-                                                           "Whether the query is being performed on subdirectories or not",
+-                                                           FALSE,
+-                                                           G_PARAM_READWRITE));
++                                     g_param_spec_enum ("recursive",
++                                                        "Whether the query is being performed on subdirectories",
++                                                        "Whether the query is being performed on subdirectories or not",
++                                                        NAUTILUS_TYPE_QUERY_RECURSIVE,
++                                                        NAUTILUS_QUERY_RECURSIVE_ALWAYS,
++                                                        G_PARAM_READWRITE));
+ 
+     /**
+      * NautilusQuery::search-type:
+@@ -636,22 +637,21 @@ nautilus_query_set_searching (NautilusQuery *query,
+     }
+ }
+ 
+-gboolean
++NautilusQueryRecursive
+ nautilus_query_get_recursive (NautilusQuery *query)
+ {
+-    g_return_val_if_fail (NAUTILUS_IS_QUERY (query), FALSE);
++    g_return_val_if_fail (NAUTILUS_IS_QUERY (query),
++                          NAUTILUS_QUERY_RECURSIVE_ALWAYS);
+ 
+     return query->recursive;
+ }
+ 
+ void
+-nautilus_query_set_recursive (NautilusQuery *query,
+-                              gboolean       recursive)
++nautilus_query_set_recursive (NautilusQuery          *query,
++                              NautilusQueryRecursive  recursive)
+ {
+     g_return_if_fail (NAUTILUS_IS_QUERY (query));
+ 
+-    recursive = !!recursive;
+-
+     if (query->recursive != recursive)
+     {
+         query->recursive = recursive;
+diff --git a/src/nautilus-query.h b/src/nautilus-query.h
+index 2264f50..0e04061 100644
+--- a/src/nautilus-query.h
++++ b/src/nautilus-query.h
+@@ -35,6 +35,13 @@ typedef enum {
+         NAUTILUS_QUERY_SEARCH_CONTENT_FULL_TEXT,
+ } NautilusQuerySearchContent;
+ 
++typedef enum {
++        NAUTILUS_QUERY_RECURSIVE_NEVER,
++        NAUTILUS_QUERY_RECURSIVE_ALWAYS,
++        NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY,
++        NAUTILUS_QUERY_RECURSIVE_INDEXED_ONLY,
++} NautilusQueryRecursive;
++
+ #define NAUTILUS_TYPE_QUERY		(nautilus_query_get_type ())
+ 
+ G_DECLARE_FINAL_TYPE (NautilusQuery, nautilus_query, NAUTILUS, QUERY, GObject)
+@@ -67,10 +74,9 @@ GPtrArray*     nautilus_query_get_date_range     (NautilusQuery *query);
+ void           nautilus_query_set_date_range     (NautilusQuery *query,
+                                                   GPtrArray     *date_range);
+ 
+-gboolean       nautilus_query_get_recursive      (NautilusQuery *query);
+-
+-void           nautilus_query_set_recursive      (NautilusQuery *query,
+-                                                  gboolean       recursive);
++NautilusQueryRecursive nautilus_query_get_recursive (NautilusQuery *query);
++void                   nautilus_query_set_recursive (NautilusQuery          *query,
++                                                     NautilusQueryRecursive  recursive);
+ 
+ gboolean       nautilus_query_get_searching      (NautilusQuery *query);
+ 
+diff --git a/src/nautilus-search-directory.c b/src/nautilus-search-directory.c
+index ae710f3..d86fda2 100644
+--- a/src/nautilus-search-directory.c
++++ b/src/nautilus-search-directory.c
+@@ -176,8 +176,6 @@ static void
+ start_search (NautilusSearchDirectory *self)
+ {
+     NautilusSearchEngineModel *model_provider;
+-    NautilusSearchEngineSimple *simple_provider;
+-    gboolean recursive;
+ 
+     if (!self->query)
+     {
+@@ -205,10 +203,6 @@ start_search (NautilusSearchDirectory *self)
+     model_provider = nautilus_search_engine_get_model_provider (self->engine);
+     nautilus_search_engine_model_set_model (model_provider, self->base_model);
+ 
+-    simple_provider = nautilus_search_engine_get_simple_provider (self->engine);
+-    recursive = nautilus_query_get_recursive (self->query);
+-    g_object_set (simple_provider, "recursive", recursive, NULL);
+-
+     reset_file_list (self);
+ 
+     nautilus_search_provider_start (NAUTILUS_SEARCH_PROVIDER (self->engine));
+diff --git a/src/nautilus-search-engine-private.h b/src/nautilus-search-engine-private.h
+new file mode 100644
+index 0000000..e5f989f
+--- /dev/null
++++ b/src/nautilus-search-engine-private.h
+@@ -0,0 +1,31 @@
++/*
++ * Copyright (C) 2018 Canonical Ltd.
++ *
++ * Nautilus is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * Nautilus is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; see the file COPYING.  If not,
++ * see <http://www.gnu.org/licenses/>.
++ *
++ * Author: Marco Trevisan <marco@ubuntu.com>
++ *
++ */
++
++#pragma once
++
++#include "nautilus-query.h"
++
++typedef enum {
++        NAUTILUS_SEARCH_ENGINE_TYPE_NON_INDEXED,
++        NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
++} NautilusSearchEngineType;
++
++gboolean is_recursive_search (NautilusSearchEngineType engine_type, NautilusQueryRecursive recursive, GFile *location);
+diff --git a/src/nautilus-search-engine-simple.c b/src/nautilus-search-engine-simple.c
+index 3ec9eb3..19a8616 100644
+--- a/src/nautilus-search-engine-simple.c
++++ b/src/nautilus-search-engine-simple.c
+@@ -20,9 +20,11 @@
+  */
+ 
+ #include <config.h>
++#include "nautilus-search-engine-simple.h"
++
++#include "nautilus-search-engine-private.h"
+ #include "nautilus-search-hit.h"
+ #include "nautilus-search-provider.h"
+-#include "nautilus-search-engine-simple.h"
+ #include "nautilus-ui-utilities.h"
+ #define DEBUG_FLAG NAUTILUS_DEBUG_SEARCH
+ #include "nautilus-debug.h"
+@@ -35,7 +37,7 @@
+ 
+ enum
+ {
+-    PROP_RECURSIVE = 1,
++    PROP_0,
+     PROP_RUNNING,
+     NUM_PROPERTIES
+ };
+@@ -52,7 +54,6 @@ typedef struct
+ 
+     GHashTable *visited;
+ 
+-    gboolean recursive;
+     gint n_processed_files;
+     GList *hits;
+ 
+@@ -66,8 +67,6 @@ struct _NautilusSearchEngineSimple
+     NautilusQuery *query;
+ 
+     SearchThreadData *active_search;
+-
+-    gboolean recursive;
+ };
+ 
+ static void nautilus_search_provider_init (NautilusSearchProviderInterface *iface);
+@@ -208,6 +207,9 @@ static void
+ visit_directory (GFile            *dir,
+                  SearchThreadData *data)
+ {
++    g_autoptr (GPtrArray) date_range = NULL;
++    NautilusQuerySearchType type;
++    NautilusQueryRecursive recursive;
+     GFileEnumerator *enumerator;
+     GFileInfo *info;
+     GFile *child;
+@@ -238,10 +240,12 @@ visit_directory (GFile            *dir,
+         return;
+     }
+ 
++    type = nautilus_query_get_search_type (data->query);
++    recursive = nautilus_query_get_recursive (data->query);
++    date_range = nautilus_query_get_date_range (data->query);
++
+     while ((info = g_file_enumerator_next_file (enumerator, data->cancellable, NULL)) != NULL)
+     {
+-        g_autoptr (GPtrArray) date_range = NULL;
+-
+         display_name = g_file_info_get_display_name (info);
+         if (display_name == NULL)
+         {
+@@ -276,15 +280,12 @@ visit_directory (GFile            *dir,
+         mtime = g_file_info_get_attribute_uint64 (info, "time::modified");
+         atime = g_file_info_get_attribute_uint64 (info, "time::access");
+ 
+-        date_range = nautilus_query_get_date_range (data->query);
+         if (found && date_range != NULL)
+         {
+-            NautilusQuerySearchType type;
+             guint64 current_file_time;
+ 
+             initial_date = g_ptr_array_index (date_range, 0);
+             end_date = g_ptr_array_index (date_range, 1);
+-            type = nautilus_query_get_search_type (data->query);
+ 
+             if (type == NAUTILUS_QUERY_SEARCH_TYPE_LAST_ACCESS)
+             {
+@@ -322,7 +323,10 @@ visit_directory (GFile            *dir,
+             send_batch (data);
+         }
+ 
+-        if (data->engine->recursive && g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY)
++        if (recursive != NAUTILUS_QUERY_RECURSIVE_NEVER &&
++            g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY &&
++            is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_NON_INDEXED,
++                                 recursive, child))
+         {
+             id = g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_ID_FILE);
+             visited = FALSE;
+@@ -438,9 +442,9 @@ nautilus_search_engine_simple_set_query (NautilusSearchProvider *provider,
+ {
+     NautilusSearchEngineSimple *simple = NAUTILUS_SEARCH_ENGINE_SIMPLE (provider);
+ 
+-    g_object_ref (query);
+     g_clear_object (&simple->query);
+-    simple->query = query;
++
++    simple->query = g_object_ref (query);
+ }
+ 
+ static gboolean
+@@ -453,30 +457,6 @@ nautilus_search_engine_simple_is_running (NautilusSearchProvider *provider)
+     return simple->active_search != NULL;
+ }
+ 
+-static void
+-nautilus_search_engine_simple_set_property (GObject      *object,
+-                                            guint         arg_id,
+-                                            const GValue *value,
+-                                            GParamSpec   *pspec)
+-{
+-    NautilusSearchEngineSimple *engine = NAUTILUS_SEARCH_ENGINE_SIMPLE (object);
+-
+-    switch (arg_id)
+-    {
+-        case PROP_RECURSIVE:
+-        {
+-            engine->recursive = g_value_get_boolean (value);
+-        }
+-        break;
+-
+-        default:
+-        {
+-            G_OBJECT_WARN_INVALID_PROPERTY_ID (object, arg_id, pspec);
+-        }
+-        break;
+-    }
+-}
+-
+ static void
+ nautilus_search_engine_simple_get_property (GObject    *object,
+                                             guint       arg_id,
+@@ -492,12 +472,6 @@ nautilus_search_engine_simple_get_property (GObject    *object,
+             g_value_set_boolean (value, nautilus_search_engine_simple_is_running (NAUTILUS_SEARCH_PROVIDER (engine)));
+         }
+         break;
+-
+-        case PROP_RECURSIVE:
+-        {
+-            g_value_set_boolean (value, engine->recursive);
+-        }
+-        break;
+     }
+ }
+ 
+@@ -518,20 +492,6 @@ nautilus_search_engine_simple_class_init (NautilusSearchEngineSimpleClass *class
+     gobject_class = G_OBJECT_CLASS (class);
+     gobject_class->finalize = finalize;
+     gobject_class->get_property = nautilus_search_engine_simple_get_property;
+-    gobject_class->set_property = nautilus_search_engine_simple_set_property;
+-
+-    /**
+-     * NautilusSearchEngineSimple::recursive:
+-     *
+-     * Whether the search is recursive or not.
+-     */
+-    g_object_class_install_property (gobject_class,
+-                                     PROP_RECURSIVE,
+-                                     g_param_spec_boolean ("recursive",
+-                                                           "recursive",
+-                                                           "recursive",
+-                                                           FALSE,
+-                                                           G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
+ 
+     /**
+      * NautilusSearchEngine::running:
+diff --git a/src/nautilus-search-engine-simple.h b/src/nautilus-search-engine-simple.h
+index dd6953f..d50b36d 100644
+--- a/src/nautilus-search-engine-simple.h
++++ b/src/nautilus-search-engine-simple.h
+@@ -22,6 +22,8 @@
+ #ifndef NAUTILUS_SEARCH_ENGINE_SIMPLE_H
+ #define NAUTILUS_SEARCH_ENGINE_SIMPLE_H
+ 
++#include <glib-object.h>
++
+ G_BEGIN_DECLS
+ 
+ #define NAUTILUS_TYPE_SEARCH_ENGINE_SIMPLE (nautilus_search_engine_simple_get_type ())
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 4c917dd..8885ca4 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -22,7 +22,7 @@
+ #include <config.h>
+ #include "nautilus-search-engine-tracker.h"
+ 
+-#include "nautilus-global-preferences.h"
++#include "nautilus-search-engine-private.h"
+ #include "nautilus-search-hit.h"
+ #include "nautilus-search-provider.h"
+ #define DEBUG_FLAG NAUTILUS_DEBUG_SEARCH
+@@ -295,7 +295,6 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+     GString *sparql;
+     GList *mimetypes, *l;
+     gint mime_count;
+-    gboolean recursive;
+     GPtrArray *date_range;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
+@@ -317,10 +316,6 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+         return;
+     }
+ 
+-    recursive = g_settings_get_enum (nautilus_preferences, "recursive-search") == NAUTILUS_SPEED_TRADEOFF_LOCAL_ONLY ||
+-                g_settings_get_enum (nautilus_preferences, "recursive-search") == NAUTILUS_SPEED_TRADEOFF_ALWAYS;
+-    tracker->recursive = recursive;
+-
+     tracker->fts_enabled = nautilus_query_get_search_content (tracker->query);
+ 
+     query_text = nautilus_query_get_text (tracker->query);
+@@ -468,13 +463,18 @@ static void
+ nautilus_search_engine_tracker_set_query (NautilusSearchProvider *provider,
+                                           NautilusQuery          *query)
+ {
++    g_autoptr(GFile) location = NULL;
+     NautilusSearchEngineTracker *tracker;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
++    location = nautilus_query_get_location (query);
+ 
+-    g_object_ref (query);
+     g_clear_object (&tracker->query);
+-    tracker->query = query;
++
++    tracker->query = g_object_ref (query);
++    tracker->recursive = is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
++                                              nautilus_query_get_recursive (query),
++                                              location);
+ }
+ 
+ static gboolean
+diff --git a/src/nautilus-search-engine.c b/src/nautilus-search-engine.c
+index 209bd4f..3a0c9d4 100644
+--- a/src/nautilus-search-engine.c
++++ b/src/nautilus-search-engine.c
+@@ -20,14 +20,16 @@
+  */
+ 
+ #include <config.h>
+-
+-#include <glib/gi18n.h>
+-#include "nautilus-search-provider.h"
+ #include "nautilus-search-engine.h"
+-#include "nautilus-search-engine-simple.h"
++#include "nautilus-search-engine-private.h"
++
++#include "nautilus-file.h"
+ #include "nautilus-search-engine-model.h"
++#include "nautilus-search-provider.h"
++#include <glib/gi18n.h>
+ #define DEBUG_FLAG NAUTILUS_DEBUG_SEARCH
+ #include "nautilus-debug.h"
++#include "nautilus-search-engine-simple.h"
+ #include "nautilus-search-engine-tracker.h"
+ 
+ typedef struct
+@@ -417,12 +419,28 @@ nautilus_search_engine_get_model_provider (NautilusSearchEngine *engine)
+     return priv->model;
+ }
+ 
+-NautilusSearchEngineSimple *
+-nautilus_search_engine_get_simple_provider (NautilusSearchEngine *engine)
++gboolean
++is_recursive_search (NautilusSearchEngineType  engine_type,
++                     NautilusQueryRecursive    recursive,
++                     GFile                    *location)
+ {
+-    NautilusSearchEnginePrivate *priv;
++    switch (recursive)
++    {
++        case NAUTILUS_QUERY_RECURSIVE_NEVER:
++            return FALSE;
+ 
+-    priv = nautilus_search_engine_get_instance_private (engine);
++        case NAUTILUS_QUERY_RECURSIVE_ALWAYS:
++            return TRUE;
++
++        case NAUTILUS_QUERY_RECURSIVE_INDEXED_ONLY:
++            return engine_type == NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED;
++
++        case NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY:
++        {
++            g_autoptr (NautilusFile) file = nautilus_file_get (location);
++            return !nautilus_file_is_remote (file);
++        }
++    }
+ 
+-    return priv->simple;
++    return TRUE;
+ }
+diff --git a/src/nautilus-search-engine.h b/src/nautilus-search-engine.h
+index 0416e83..435908a 100644
+--- a/src/nautilus-search-engine.h
++++ b/src/nautilus-search-engine.h
+@@ -42,8 +42,6 @@ struct _NautilusSearchEngineClass
+ NautilusSearchEngine *nautilus_search_engine_new                (void);
+ NautilusSearchEngineModel *
+                       nautilus_search_engine_get_model_provider (NautilusSearchEngine *engine);
+-NautilusSearchEngineSimple *
+-                      nautilus_search_engine_get_simple_provider (NautilusSearchEngine *engine);
+ 
+ G_END_DECLS
+ 
+diff --git a/src/nautilus-shell-search-provider.c b/src/nautilus-shell-search-provider.c
+index cdadc08..ffc2b7f 100644
+--- a/src/nautilus-shell-search-provider.c
++++ b/src/nautilus-shell-search-provider.c
+@@ -426,15 +426,30 @@ search_add_volumes_and_bookmarks (PendingSearch *search)
+     g_object_unref (volume_monitor);
+ }
+ 
++static NautilusQuery*
++shell_query_new (gchar **terms)
++{
++    NautilusQuery *query;
++    g_autoptr (GFile) home = NULL;
++    g_autofree gchar *terms_joined = NULL;
++
++    terms_joined = g_strjoinv (" ", terms);
++    home = g_file_new_for_path (g_get_home_dir ());
++
++    query = nautilus_query_new ();
++    nautilus_query_set_text (query, terms_joined);
++    nautilus_query_set_location (query, home);
++
++    return query;
++}
++
+ static void
+ execute_search (NautilusShellSearchProvider  *self,
+                 GDBusMethodInvocation        *invocation,
+                 gchar                       **terms)
+ {
+-    gchar *terms_joined;
+     NautilusQuery *query;
+     PendingSearch *pending_search;
+-    GFile *home;
+ 
+     cancel_current_search (self);
+ 
+@@ -446,13 +461,9 @@ execute_search (NautilusShellSearchProvider  *self,
+         return;
+     }
+ 
+-    terms_joined = g_strjoinv (" ", terms);
+-    home = g_file_new_for_path (g_get_home_dir ());
+-
+-    query = nautilus_query_new ();
++    query = shell_query_new (terms);
++    nautilus_query_set_recursive (query, NAUTILUS_QUERY_RECURSIVE_INDEXED_ONLY);
+     nautilus_query_set_show_hidden_files (query, FALSE);
+-    nautilus_query_set_text (query, terms_joined);
+-    nautilus_query_set_location (query, home);
+ 
+     pending_search = g_slice_new0 (PendingSearch);
+     pending_search->invocation = g_object_ref (invocation);
+@@ -479,9 +490,6 @@ execute_search (NautilusShellSearchProvider  *self,
+     nautilus_search_provider_set_query (NAUTILUS_SEARCH_PROVIDER (pending_search->engine),
+                                         query);
+     nautilus_search_provider_start (NAUTILUS_SEARCH_PROVIDER (pending_search->engine));
+-
+-    g_clear_object (&home);
+-    g_free (terms_joined);
+ }
+ 
+ static gboolean
+@@ -713,13 +721,23 @@ handle_launch_search (NautilusShellSearchProvider2  *skeleton,
+                       gpointer                       user_data)
+ {
+     GApplication *app = g_application_get_default ();
+-    gchar *string = g_strjoinv (" ", terms);
+-    gchar *uri = nautilus_get_home_directory_uri ();
++    g_autoptr (NautilusQuery) query = shell_query_new (terms);
+ 
+-    nautilus_application_search (NAUTILUS_APPLICATION (app), uri, string);
++    if (location_settings_search_get_recursive () == NAUTILUS_QUERY_RECURSIVE_NEVER)
++    {
++        /*
++         * If no recursive search is enabled, we still want to be able to
++         * show the same results we presented in the overview when nautilus
++         * is explicitly launched to access to more results, and thus we perform
++         * a query showing results coming from index-based search engines.
++         * Otherwise we just respect the user settings.
++         * See: https://gitlab.gnome.org/GNOME/nautilus/merge_requests/249
++         */
++        nautilus_query_set_recursive (query,
++                                      NAUTILUS_QUERY_RECURSIVE_INDEXED_ONLY);
++    }
+ 
+-    g_free (string);
+-    g_free (uri);
++    nautilus_application_search (NAUTILUS_APPLICATION (app), query);
+ 
+     nautilus_shell_search_provider2_complete_launch_search (skeleton, invocation);
+     return TRUE;
+diff --git a/src/nautilus-window-slot.c b/src/nautilus-window-slot.c
+index 7b27244..9b9a7aa 100644
+--- a/src/nautilus-window-slot.c
++++ b/src/nautilus-window-slot.c
+@@ -100,6 +100,7 @@ typedef struct
+ 
+     /* Query editor */
+     NautilusQueryEditor *query_editor;
++    NautilusQuery *pending_search_query;
+     gulong qe_changed_id;
+     gulong qe_cancel_id;
+     gulong qe_activated_id;
+@@ -110,7 +111,6 @@ typedef struct
+      * finish. Used for showing a spinner to provide feedback to the user. */
+     gboolean allow_stop;
+     gboolean needs_reload;
+-    gchar *pending_search_text;
+ 
+     /* New location. */
+     GFile *pending_location;
+@@ -361,9 +361,9 @@ update_search_visible (NautilusWindowSlot *self)
+         g_object_unref (query);
+     }
+ 
+-    if (priv->pending_search_text)
++    if (priv->pending_search_query)
+     {
+-        nautilus_window_slot_search (self, g_strdup (priv->pending_search_text));
++        nautilus_window_slot_search (self, g_object_ref (priv->pending_search_query));
+     }
+ }
+ 
+@@ -589,17 +589,13 @@ nautilus_window_slot_get_search_visible (NautilusWindowSlot *self)
+ 
+ void
+ nautilus_window_slot_search (NautilusWindowSlot *self,
+-                             const gchar        *text)
++                             NautilusQuery      *query)
+ {
+     NautilusWindowSlotPrivate *priv;
+     NautilusView *view;
+ 
+     priv = nautilus_window_slot_get_instance_private (self);
+-    if (priv->pending_search_text)
+-    {
+-        g_free (priv->pending_search_text);
+-        priv->pending_search_text = NULL;
+-    }
++    g_clear_object (&priv->pending_search_query);
+ 
+     view = nautilus_window_slot_get_current_view (self);
+     /* We could call this when the location is still being checked in the
+@@ -608,11 +604,11 @@ nautilus_window_slot_search (NautilusWindowSlot *self,
+     if (view)
+     {
+         nautilus_window_slot_set_search_visible (self, TRUE);
+-        nautilus_query_editor_set_text (priv->query_editor, text);
++        nautilus_query_editor_set_query (priv->query_editor, query);
+     }
+     else
+     {
+-        priv->pending_search_text = g_strdup (text);
++        priv->pending_search_query = g_object_ref (query);
+     }
+ }
+ 
+@@ -2812,6 +2808,7 @@ nautilus_window_slot_dispose (GObject *object)
+     g_clear_object (&priv->current_location_bookmark);
+     g_clear_object (&priv->last_location_bookmark);
+     g_clear_object (&priv->slot_action_group);
++    g_clear_object (&priv->pending_search_query);
+ 
+     g_clear_pointer (&priv->find_mount_cancellable, g_cancellable_cancel);
+ 
+diff --git a/src/nautilus-window-slot.h b/src/nautilus-window-slot.h
+index 573357d..f67b6ab 100644
+--- a/src/nautilus-window-slot.h
++++ b/src/nautilus-window-slot.h
+@@ -112,7 +112,7 @@ void     nautilus_window_slot_set_active                   (NautilusWindowSlot *
+ gboolean nautilus_window_slot_get_loading                  (NautilusWindowSlot *slot);
+ 
+ void     nautilus_window_slot_search                       (NautilusWindowSlot *slot,
+-                                                            const gchar        *text);
++                                                            NautilusQuery      *query);
+ 
+ gboolean nautilus_window_slot_handles_location (NautilusWindowSlot *self,
+                                                 GFile              *location);
+diff --git a/src/nautilus-window.c b/src/nautilus-window.c
+index d355e1e..b10c623 100644
+--- a/src/nautilus-window.c
++++ b/src/nautilus-window.c
+@@ -3107,14 +3107,14 @@ nautilus_window_show_about_dialog (NautilusWindow *window)
+ 
+ void
+ nautilus_window_search (NautilusWindow *window,
+-                        const gchar    *text)
++                        NautilusQuery  *query)
+ {
+     NautilusWindowSlot *active_slot;
+ 
+     active_slot = nautilus_window_get_active_slot (window);
+     if (active_slot)
+     {
+-        nautilus_window_slot_search (active_slot, text);
++        nautilus_window_slot_search (active_slot, query);
+     }
+     else
+     {
+diff --git a/src/nautilus-window.h b/src/nautilus-window.h
+index 39b16e7..c1196d3 100644
+--- a/src/nautilus-window.h
++++ b/src/nautilus-window.h
+@@ -135,7 +135,7 @@ void nautilus_window_end_dnd (NautilusWindow *window,
+                               GdkDragContext *context);
+ 
+ void nautilus_window_search (NautilusWindow *window,
+-                             const gchar    *text);
++                             NautilusQuery  *query);
+ 
+ void nautilus_window_initialize_slot (NautilusWindow          *window,
+                                       NautilusWindowSlot      *slot,

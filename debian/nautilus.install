@@ -1,0 +1,8 @@
+debian/mount-archive.desktop usr/share/applications
+usr/bin
+usr/lib/*/nautilus/extensions-3.0/*.so
+usr/share/applications
+usr/share/dbus-1
+usr/share/man
+usr/share/metainfo
+etc/xdg/autostart

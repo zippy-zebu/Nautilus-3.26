@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Home Folder
+Comment=Open your personal folder
+Actions=Window;
+NoDisplay=true
+
+[Desktop Action Window]
+Name=Open a New Window
+Exec=nautilus --new-window
+OnlyShowIn=Unity;

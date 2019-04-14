@@ -1,0 +1,127 @@
+From: Ernestas Kulik <ernestask@gnome.org>
+Date: Fri, 14 Sep 2018 12:52:11 +0200
+Subject: search-engine: Query file system to determine remoteness
+
+Querying the file cache in is_recursive_search() does not guarantee that
+the file system field will be populated with a value, and somehow
+results in data races, in turn resulting in random crashes/file list
+corruption.
+
+Hopefully fixes https://gitlab.gnome.org/GNOME/nautilus/issues/640,
+closes https://gitlab.gnome.org/GNOME/nautilus/issues/632 and resolves
+https://gitlab.gnome.org/GNOME/nautilus/issues/602
+
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/nautilus/+bug/1795028
+Applied-Upstream: yes, 3.30.1, https://gitlab.gnome.org/GNOME/nautilus/commit/62ba6d83d
+---
+ src/nautilus-file-utilities.c | 18 ++++++++++++++++++
+ src/nautilus-file-utilities.h |  2 ++
+ src/nautilus-file.c           | 14 +-------------
+ src/nautilus-search-engine.c  | 18 +++++++++++++++---
+ 4 files changed, 36 insertions(+), 16 deletions(-)
+
+diff --git a/src/nautilus-file-utilities.c b/src/nautilus-file-utilities.c
+index f8d8476..3e363a4 100644
+--- a/src/nautilus-file-utilities.c
++++ b/src/nautilus-file-utilities.c
+@@ -1565,3 +1565,21 @@ location_settings_search_get_recursive_for_location (GFile *location)
+ 
+     return recursive;
+ }
++
++gboolean
++nautilus_file_system_is_remote (const char *file_system)
++{
++    static const gchar * const remote_types[] =
++    {
++        "afp",
++        "google-drive",
++        "sftp",
++        "webdav",
++        "ftp",
++        "nfs",
++        "cifs",
++        NULL
++    };
++
++    return file_system != NULL && g_strv_contains (remote_types, file_system);
++}
+diff --git a/src/nautilus-file-utilities.h b/src/nautilus-file-utilities.h
+index b165d63..37f7f49 100644
+--- a/src/nautilus-file-utilities.h
++++ b/src/nautilus-file-utilities.h
+@@ -133,4 +133,6 @@ gchar * nautilus_uri_to_native_uri (const gchar *uri);
+ NautilusQueryRecursive location_settings_search_get_recursive (void);
+ NautilusQueryRecursive location_settings_search_get_recursive_for_location (GFile *location);
+ 
++gboolean nautilus_file_system_is_remote (const char *file_system);
++
+ #endif /* NAUTILUS_FILE_UTILITIES_H */
+diff --git a/src/nautilus-file.c b/src/nautilus-file.c
+index e30d791..28b5a13 100644
+--- a/src/nautilus-file.c
++++ b/src/nautilus-file.c
+@@ -8371,18 +8371,6 @@ nautilus_file_is_in_recent (NautilusFile *file)
+     return nautilus_directory_is_in_recent (file->details->directory);
+ }
+ 
+-static const gchar * const remote_types[] =
+-{
+-    "afp",
+-    "google-drive",
+-    "sftp",
+-    "webdav",
+-    "ftp",
+-    "nfs",
+-    "cifs",
+-    NULL
+-};
+-
+ /**
+  * nautilus_file_is_remote
+  *
+@@ -8406,7 +8394,7 @@ nautilus_file_is_remote (NautilusFile *file)
+ 
+     filesystem_type = nautilus_file_get_filesystem_type (file);
+ 
+-    return filesystem_type != NULL && g_strv_contains (remote_types, filesystem_type);
++    return nautilus_file_system_is_remote (filesystem_type);
+ }
+ 
+ /**
+diff --git a/src/nautilus-search-engine.c b/src/nautilus-search-engine.c
+index 3a0c9d4..28863f7 100644
+--- a/src/nautilus-search-engine.c
++++ b/src/nautilus-search-engine.c
+@@ -23,7 +23,7 @@
+ #include "nautilus-search-engine.h"
+ #include "nautilus-search-engine-private.h"
+ 
+-#include "nautilus-file.h"
++#include "nautilus-file-utilities.h"
+ #include "nautilus-search-engine-model.h"
+ #include "nautilus-search-provider.h"
+ #include <glib/gi18n.h>
+@@ -437,8 +437,20 @@ is_recursive_search (NautilusSearchEngineType  engine_type,
+ 
+         case NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY:
+         {
+-            g_autoptr (NautilusFile) file = nautilus_file_get (location);
+-            return !nautilus_file_is_remote (file);
++            g_autoptr (GFileInfo) file_system_info = NULL;
++
++            file_system_info = g_file_query_filesystem_info (location,
++                                                             G_FILE_ATTRIBUTE_FILESYSTEM_TYPE,
++                                                             NULL, NULL);
++            if (file_system_info != NULL)
++            {
++                const char *file_system;
++
++                file_system = g_file_info_get_attribute_string (file_system_info,
++                                                                G_FILE_ATTRIBUTE_FILESYSTEM_TYPE);
++
++                return !nautilus_file_system_is_remote (file_system);
++            }
+         }
+     }
+ 

@@ -1,0 +1,80 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Thu, 26 Jul 2018 04:55:19 +0200
+Subject: file-view: Always unset pending_selection after freeing it
+
+When a file view was loaded with a pending selection, and not all the files were
+seen yet, the private pending_selection list was properly free'd, but the pointer
+was not cleared, causing a crash when `nautilus_files_view_set_selection` was
+called again, as it was trying to deeply copy a list pointed by this invalid
+reference.
+
+So, removing the unneeded `pending_selection` temporary pointer from the main
+function scope, as it only confuses, while use it (with an autolist) when we
+need to pass the previous `priv->pending_selection` (stealing its ownership)
+to set_selection again.
+
+Eventually use a g_clear_pointer to free the list and nullify its priv reference
+
+Fixes #295
+
+(cherry picked from commit ae3382a281b018337a8032ef13663ec2d9c7fd6c)
+
+Bug-GNOME: https://gitlab.gnome.org/GNOME/nautilus/issues/295
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/nautilus/+bug/1713581
+Applied-Upstream: commit: https://gitlab.gnome.org/GNOME/nautilus/commit/834c4e7f
+---
+ src/nautilus-files-view.c | 16 +++++++---------
+ 1 file changed, 7 insertions(+), 9 deletions(-)
+
+diff --git a/src/nautilus-files-view.c b/src/nautilus-files-view.c
+index f916b05..87a4a42 100644
+--- a/src/nautilus-files-view.c
++++ b/src/nautilus-files-view.c
+@@ -3587,7 +3587,6 @@ done_loading (NautilusFilesView *view,
+               gboolean           all_files_seen)
+ {
+     NautilusFilesViewPrivate *priv;
+-    GList *pending_selection;
+     GList *selection;
+     gboolean do_reveal = FALSE;
+ 
+@@ -3608,21 +3607,23 @@ done_loading (NautilusFilesView *view,
+         nautilus_files_view_update_toolbar_menus (view);
+         reset_update_interval (view);
+ 
+-        pending_selection = priv->pending_selection;
+         selection = nautilus_view_get_selection (NAUTILUS_VIEW (view));
+ 
+         if (nautilus_view_is_searching (NAUTILUS_VIEW (view)) &&
+-            all_files_seen && !selection && !pending_selection)
++            all_files_seen && selection == NULL && priv->pending_selection == NULL)
+         {
+             nautilus_files_view_select_first (view);
+             do_reveal = TRUE;
+         }
+-        else if (pending_selection != NULL && all_files_seen)
++        else if (priv->pending_selection != NULL && all_files_seen)
+         {
+-            priv->pending_selection = NULL;
++            GList *pending_selection;
++            pending_selection = g_steal_pointer (&priv->pending_selection);
+ 
+             nautilus_files_view_call_set_selection (view, pending_selection);
+             do_reveal = TRUE;
++
++            nautilus_file_list_free (pending_selection);
+         }
+ 
+         if (selection)
+@@ -3630,10 +3631,7 @@ done_loading (NautilusFilesView *view,
+             g_list_free_full (selection, g_object_unref);
+         }
+ 
+-        if (pending_selection)
+-        {
+-            g_list_free_full (pending_selection, g_object_unref);
+-        }
++        g_clear_pointer (&priv->pending_selection, nautilus_file_list_free);
+ 
+         if (do_reveal)
+         {

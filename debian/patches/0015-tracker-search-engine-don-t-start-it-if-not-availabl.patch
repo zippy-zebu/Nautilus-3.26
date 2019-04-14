@@ -1,0 +1,72 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Thu, 1 Mar 2018 08:14:04 +0100
+Subject: tracker-search-engine: don't start it if not available on system
+
+---
+ src/nautilus-search-engine-tracker.c | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 8885ca4..050716d 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -42,6 +42,7 @@ struct _NautilusSearchEngineTracker
+     gboolean query_pending;
+     GQueue *hits_pending;
+ 
++    gboolean available;
+     gboolean recursive;
+     gboolean fts_enabled;
+ 
+@@ -304,8 +305,15 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+         return;
+     }
+ 
+-    DEBUG ("Tracker engine start");
+     g_object_ref (tracker);
++
++    if (!tracker->available)
++    {
++        g_idle_add (search_finished_idle, provider);
++        return;
++    }
++
++    DEBUG ("Tracker engine start");
+     tracker->query_pending = TRUE;
+ 
+     g_object_notify (G_OBJECT (provider), "running");
+@@ -471,6 +479,9 @@ nautilus_search_engine_tracker_set_query (NautilusSearchProvider *provider,
+ 
+     g_clear_object (&tracker->query);
+ 
++    if (!tracker->available)
++        return;
++
+     tracker->query = g_object_ref (query);
+     tracker->recursive = is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
+                                               nautilus_query_get_recursive (query),
+@@ -539,16 +550,21 @@ static void
+ nautilus_search_engine_tracker_init (NautilusSearchEngineTracker *engine)
+ {
+     GError *error = NULL;
++    static gboolean tracker_available = TRUE;
+ 
+-    engine->hits_pending = g_queue_new ();
+-
+-    engine->connection = tracker_sparql_connection_get (NULL, &error);
++    if (!tracker_available)
++        engine->connection = tracker_sparql_connection_get (NULL, &error);
+ 
+     if (error)
+     {
++        tracker_available = FALSE;
+         g_warning ("Could not establish a connection to Tracker: %s", error->message);
+         g_error_free (error);
++        return;
+     }
++
++    engine->available = TRUE;
++    engine->hits_pending = g_queue_new ();
+ }
+ 
+ 

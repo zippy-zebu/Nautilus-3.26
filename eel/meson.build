@@ -1,6 +1,4 @@
 libeel_2_sources = [
-    'eel-accessibility.h',
-    'eel-accessibility.c',
     'eel-art-extensions.h',
     'eel-art-extensions.c',
     'eel-canvas.h',
@@ -30,7 +28,7 @@ libeel_2_sources = [
     'eel-lib-self-check-functions.c',
 ]
 
-libeel_2_deps = [glib, gtk, gail, libm, x11]
+libeel_2_deps = [glib, gtk, libm, x11]
 
 libeel_2 = static_library ('eel-2', libeel_2_sources,
                            dependencies: libeel_2_deps,

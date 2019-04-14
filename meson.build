@@ -43,7 +43,6 @@ glib = dependency ('glib-2.0', version: glib_ver)
 gtk = dependency ('gtk+-3.0', version: gtk_ver)
 autoar = dependency ('gnome-autoar-0', version: autoar_ver)
 
-gail = dependency ('gail-3.0')
 gnome_desktop = dependency ('gnome-desktop-3.0', version: gnome_desktop_ver)
 xml = dependency ('libxml-2.0', version: xml_ver)
 x11 = dependency ('x11')

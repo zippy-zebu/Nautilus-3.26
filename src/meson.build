@@ -280,11 +280,9 @@ nautilus_deps = [glib,
                  x11,
                  gmodule_no_export,
                  tracker_sparql,
-                 gio_unix]
+                 gio_unix,
+                 gexiv2]
 
-if get_option ('enable-exif')
-    nautilus_deps += exif
-endif
 
 if get_option ('enable-selinux')
     nautilus_deps += selinux
@@ -298,10 +296,6 @@ if get_option ('enable-unity')
         'unity-bookmarks-handler.c',
         'unity-bookmarks-handler.h'
     ]
-endif
-
-if get_option ('enable-xmp')
-    nautilus_deps += exempi
 endif
 
 libnautilus = static_library ('nautilus',

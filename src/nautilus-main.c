@@ -49,9 +49,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifdef HAVE_EXEMPI
-#include <exempi/xmp.h>
-#endif
 
 int
 main (int   argc,

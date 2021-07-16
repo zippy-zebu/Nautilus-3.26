@@ -32,6 +32,9 @@ unity_ver = '>=4.0.0'
 dbusmenu_ver = '>=0.4.90'
 selinux_ver = '>=2.0'
 gexiv2_ver = '>= 0.10.0'
+libunity_settings_daemon_ver = '>=1.0'
+unity_settings_daemon_ver = '>=1.0'
+
 
 cc = meson.get_compiler ('c')
 
@@ -55,6 +58,10 @@ gsettings_desktop_schemas = dependency ('gsettings-desktop-schemas',
 gexiv2 = dependency('gexiv2', version : gexiv2_ver)
 
 zeitgeist = dependency ('zeitgeist-2.0')
+
+libunity_settings_daemon = dependency ('libunity-settings-daemon', version: libunity_settings_daemon_ver)
+unity_settings_daemon = dependency ('unity-settings-daemon', version: unity_settings_daemon_ver)
+
 
 libm = cc.find_library ('libm')
 

@@ -32,7 +32,7 @@
 #include <glib/gi18n.h>
 
 #define GNOME_DESKTOP_USE_UNSTABLE_API
-#include <libgnome-desktop/gnome-bg.h>
+#include <libunity-settings-daemon/gsd-bg.h>
 
 #include <eel/eel-vfs-extensions.h>
 #include <src/nautilus-file-utilities.h>
@@ -65,7 +65,7 @@ background_changed (NautilusDesktopWindow *window)
 
     g_clear_pointer (&window->details->surface, cairo_surface_destroy);
 
-    window->details->surface = gnome_bg_get_surface_from_root (screen);
+    window->details->surface = gsd_bg_get_surface_from_root (screen);
     gtk_widget_queue_draw (widget);
 }
 

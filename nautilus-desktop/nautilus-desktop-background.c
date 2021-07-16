@@ -36,7 +36,7 @@
 #include "nautilus-global-preferences.h"
 
 #define GNOME_DESKTOP_USE_UNSTABLE_API
-#include <libgnome-desktop/gnome-bg.h>
+#include <libunity-settings-daemon/gsd-bg.h>
 #include <gdesktop-enums.h>
 
 #include <gtk/gtk.h>
@@ -58,11 +58,11 @@ enum {
 struct NautilusDesktopBackgroundDetails {
 
     GtkWidget *widget;
-    GnomeBG *bg;
+    GsdBG  *bg;
 
     /* Realized data: */
     cairo_surface_t *background_surface;
-    GnomeBGCrossfade *fade;
+    GsdBGCrossfade *fade;
     int background_entire_width;
     int background_entire_height;
     GdkColor default_color;
@@ -230,7 +230,7 @@ nautilus_desktop_background_set_image_uri (NautilusDesktopBackground *self,
         filename = NULL;
     }
 
-    gnome_bg_set_filename (self->details->bg, filename);
+    gsd_bg_set_filename (self->details->bg, filename);
 
     g_free (filename);
 }
@@ -275,7 +275,7 @@ init_fade (NautilusDesktopBackground *self)
 
         if (old_width == width && old_height == height)
         {
-            self->details->fade = gnome_bg_crossfade_new (width, height);
+            self->details->fade = gsd_bg_crossfade_new (width, height);
             g_signal_connect_swapped (self->details->fade,
                                                   "finished",
                                                   G_CALLBACK (free_fade),
@@ -283,17 +283,17 @@ init_fade (NautilusDesktopBackground *self)
         }
     }
 
-    if (self->details->fade != NULL && !gnome_bg_crossfade_is_started (self->details->fade))
+    if (self->details->fade != NULL && !gsd_bg_crossfade_is_started (self->details->fade))
     {
         cairo_surface_t *start_surface;
 
         if (self->details->background_surface == NULL)
         {
-            start_surface = gnome_bg_get_surface_from_root (gtk_widget_get_screen (widget));
+            start_surface = gsd_bg_get_surface_from_root (gtk_widget_get_screen (widget));
         } else {
             start_surface = cairo_surface_reference (self->details->background_surface);
         }
-        gnome_bg_crossfade_set_start_surface (self->details->fade,
+        gsd_bg_crossfade_set_start_surface (self->details->fade,
                                               start_surface);
         cairo_surface_destroy (start_surface);
     }
@@ -328,7 +328,7 @@ nautilus_desktop_background_ensure_realized (NautilusDesktopBackground *self)
     free_background_surface (self);
 
     window = gtk_widget_get_window (self->details->widget);
-    self->details->background_surface = gnome_bg_create_surface (self->details->bg,
+    self->details->background_surface = gsd_bg_create_surface (self->details->bg,
                                                                  window,
                                                                  entire_width, entire_height,
                                                                  TRUE);
@@ -345,7 +345,7 @@ nautilus_desktop_background_ensure_realized (NautilusDesktopBackground *self)
 }
 
 static void
-on_fade_finished (GnomeBGCrossfade *fade,
+on_fade_finished (GsdBGCrossfade *fade,
           GdkWindow *window,
           gpointer user_data)
 {
@@ -354,7 +354,7 @@ on_fade_finished (GnomeBGCrossfade *fade,
     nautilus_desktop_background_ensure_realized (self);
     if (self->details->background_surface != NULL)
     {
-        gnome_bg_set_surface_as_root (gdk_window_get_screen (window),
+        gsd_bg_set_surface_as_root (gdk_window_get_screen (window),
                                       self->details->background_surface);
     }
 }
@@ -369,20 +369,20 @@ fade_to_surface (NautilusDesktopBackground *self,
         return FALSE;
     }
 
-    if (!gnome_bg_crossfade_set_end_surface (self->details->fade, surface))
+    if (!gsd_bg_crossfade_set_end_surface (self->details->fade, surface))
     {
         return FALSE;
     }
 
-    if (!gnome_bg_crossfade_is_started (self->details->fade))
+    if (!gsd_bg_crossfade_is_started (self->details->fade))
     {
-        gnome_bg_crossfade_start (self->details->fade, window);
+        gsd_bg_crossfade_start (self->details->fade, window);
         g_signal_connect (self->details->fade,
                           "finished",
                           G_CALLBACK (on_fade_finished), self);
     }
 
-    return gnome_bg_crossfade_is_started (self->details->fade);
+    return gsd_bg_crossfade_is_started (self->details->fade);
 }
 
 static void
@@ -417,7 +417,7 @@ nautilus_desktop_background_set_up_widget (NautilusDesktopBackground *self)
         gdk_window_set_background_pattern (window, pattern);
         cairo_pattern_destroy (pattern);
 
-        gnome_bg_set_surface_as_root (gtk_widget_get_screen (widget),
+        gsd_bg_set_surface_as_root (gtk_widget_get_screen (widget),
                                       self->details->background_surface);
     }
 }
@@ -449,7 +449,7 @@ queue_background_change (NautilusDesktopBackground *self)
 }
 
 static void
-nautilus_desktop_background_changed (GnomeBG *bg,
+nautilus_desktop_background_changed (GsdBG  *bg,
                                      gpointer user_data)
 {
     NautilusDesktopBackground *self;
@@ -460,7 +460,7 @@ nautilus_desktop_background_changed (GnomeBG *bg,
 }
 
 static void
-nautilus_desktop_background_transitioned (GnomeBG *bg,
+nautilus_desktop_background_transitioned (GsdBG  *bg,
                                           gpointer user_data)
 {
     NautilusDesktopBackground *self;
@@ -536,10 +536,10 @@ on_widget_destroyed (GtkWidget *widget,
 static gboolean
 background_change_event_idle_cb (NautilusDesktopBackground *self)
 {
-    gnome_bg_load_from_preferences (self->details->bg,
+    gsd_bg_load_from_preferences (self->details->bg,
                                     gnome_background_preferences);
 
-    set_accountsservice_background (gnome_bg_get_filename (self->details->bg));
+    set_accountsservice_background (gsd_bg_get_filename (self->details->bg));
 
     g_object_unref (self);
 
@@ -586,7 +586,7 @@ nautilus_desktop_background_constructed (GObject *obj)
     g_signal_connect_object (widget, "unrealize",
                              G_CALLBACK (widget_unrealize_cb), self, 0);
 
-    gnome_bg_load_from_preferences (self->details->bg,
+    gsd_bg_load_from_preferences (self->details->bg,
                                     gnome_background_preferences);
 
     /* widget is already realized; we won't get widget_realize_cb called by
@@ -673,7 +673,7 @@ nautilus_desktop_background_init (NautilusDesktopBackground *self)
                                                  NAUTILUS_TYPE_DESKTOP_BACKGROUND,
                                                  NautilusDesktopBackgroundDetails);
 
-    self->details->bg = gnome_bg_new ();
+    self->details->bg = gsd_bg_new ();
     self->details->default_color.red = 0xffff;
     self->details->default_color.green = 0xffff;
     self->details->default_color.blue = 0xffff;
@@ -690,12 +690,12 @@ nautilus_desktop_background_receive_dropped_background_image (NautilusDesktopBac
 {
     /* Currently, we only support tiled images. So we set the placement.
      */
-    gnome_bg_set_placement (self->details->bg,
+    gsd_bg_set_placement (self->details->bg,
                             G_DESKTOP_BACKGROUND_STYLE_WALLPAPER);
-    gnome_bg_set_draw_background (self->details->bg, TRUE);
+    gsd_bg_set_draw_background (self->details->bg, TRUE);
     nautilus_desktop_background_set_image_uri (self, image_uri);
 
-    gnome_bg_save_to_preferences (self->details->bg,
+    gsd_bg_save_to_preferences (self->details->bg,
                                   gnome_background_preferences);
 }
 
